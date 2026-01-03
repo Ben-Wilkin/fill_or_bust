@@ -1,16 +1,21 @@
 """Fill or Bust - command-line implementation
 
-Sensible configurable variant:
-- Players race to fill a number of "slots" (default 5).
-- On their turn a player repeatedly draws a card and rolls a D6.
-- If the roll is a success (>= `die_success_threshold`), the card counts as a success for this turn.
-- If they bust (roll < threshold) they lose the successes collected this turn.
-- After any success the player may bank (convert successes to permanent filled slots) or continue.
-- First player to fill all slots wins.
+Dice-based "Fill or Bust" variant with simple special-event cards.
+
+Overview:
+- Players take turns rolling up to 6 six-sided dice.
+- Scoring per roll:
+    - Three of a kind: face value * 100 (three 1s = 1000).
+    - Single 1s = 100 points each.
+    - Single 5s = 50 points each.
+    - Extras beyond three of a kind are NOT treated as escalating multipliers; additional dice only score separately when they are 1s or 5s.
+- On each turn a player draws a special card which may modify the turn (bonus points, skip, forced bust, etc.).
+- A player may keep scoring dice from a roll, add their points to the turn total, then either roll the remaining dice or bank the turn total into their permanent score.
+- If a roll contains no scoring dice the player busts and scores 0 for that turn (some card effects may alter this).
 
 Usage examples:
-  python main.py --players 2            # interactive with 2 human players
-  python main.py --players 3 --ai --simulate 5   # run 5 simulated games with 3 AI players
+    python main.py --players 2            # interactive with 2 human players
+    python main.py --players 3 --ai --simulate 5   # run 5 simulated games with 3 AI players
 """
 
 import argparse
@@ -51,7 +56,8 @@ def score_dice(dice):
     """Score a list of dice (values 1-6).
 
     Rules implemented:
-    - Three of a kind: face value * 100 (three 1s = 1000). For counts >3, each extra die doubles the three-of-a-kind value (standard escalation).
+    - Three of a kind: face value * 100 (three 1s = 1000).
+    - Extras beyond three are NOT treated as multiplier escalation; additional dice only score separately when they are 1s or 5s.
     - Single 1s are worth 100 each.
     - Single 5s are worth 50 each.
 
@@ -177,6 +183,7 @@ class Game:
 
         dice_left = 6
         turn_points = 0
+        fills = 0
 
         while True:
             roll = self.roll(dice_left)
@@ -211,16 +218,23 @@ class Game:
                 used_count = sum(breakdown.values())
                 dice_left -= used_count
                 if dice_left == 0:
-                    # hot dice: player gets all 6 dice back
+                    # hot dice: player used all dice once during this turn
+                    fills += 1
+                    # If a bonus card was drawn, add it to the running turn total when the player fills.
+                    if special_state.get('bonus') and not special_state.get('bonus_added'):
+                        turn_points += special_state['bonus']
+                        special_state['bonus_added'] = True
+                        if self.verbose and player.is_ai:
+                            self._info(f"{player.name} (AI) receives bonus {special_state['bonus']} added to turn total for filling this turn.")
                     dice_left = 6
                 if self.verbose and player.is_ai:
                     if self.verbose and player.is_ai:
                         self._info(f"{player.name} (AI) takes {taken_score} points this roll, turn total {turn_points}.")
                 # AI bank decision
                 if player.is_ai and turn_points >= self.ai_threshold_points:
-                    # AI banks; include bonus if present
+                    # AI banks; include bonus only if the player filled (used all dice) this turn
                     player.points += turn_points
-                    if special_state.get('bonus'):
+                    if special_state.get('bonus') and fills > 0:
                         player.points += special_state['bonus']
                     if self.verbose:
                         if self.verbose:
@@ -270,15 +284,10 @@ class Game:
                     break
             if choice == 'b':
                 # Bank allowed? for DOUBLE TROUBLE require at least 2 fills
-                fills = locals().get('fills', 0)
                 if special_state.get('double_trouble') and fills < 2:
                     self._info("DOUBLE TROUBLE active: you must fill twice before banking is allowed.")
                     continue
                 player.points += turn_points
-                if special_state.get('bonus'):
-                    player.points += special_state['bonus']
-                    if self.verbose:
-                        self._info(f"{player.name} receives bonus {special_state['bonus']} for filling this turn.")
                 if self.verbose:
                     self._info(f"{player.name} banks {turn_points} points and now has {player.points}.")
                 return turn_points
@@ -312,7 +321,13 @@ class Game:
             dice_left -= taken_count
             # track fills
             if dice_left == 0:
-                fills = locals().get('fills', 0) + 1
+                fills += 1
+                # If a bonus card was drawn, add it to the running turn total when the player fills.
+                if special_state.get('bonus') and not special_state.get('bonus_added'):
+                    turn_points += special_state['bonus']
+                    special_state['bonus_added'] = True
+                    if self.verbose:
+                        self._info(f"{player.name} receives bonus {special_state['bonus']} added to turn total for filling this turn.")
                 dice_left = 6
 
             if self.verbose:
